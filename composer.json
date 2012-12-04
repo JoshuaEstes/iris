@@ -1,0 +1,13 @@
+{
+    "name": "iris/iris",
+    "stability": "dev",
+    "require": {
+        "monolog/monolog": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "*"
+    },
+    "autoload": {
+        "psr-0": { "": "src/" }
+    }
+}
