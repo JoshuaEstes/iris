@@ -53,16 +53,18 @@ class Worker
             $message->push($option);
         }
 
-        $this->logger->debug('Sending message to broker.', array(
-            'command' => $command,
-            'option'  => $option,
-        ));
-
         $message->push($command);
         $message->push(Mdp::WORKER);
         $message->push("");
-
         $message->setSocket($this->socket)->send();
+
+        if ($command != Mdp::HEARTBEAT) {
+            $this->logger->debug('Sending message to broker.', array(
+                'command' => $command,
+                'option'  => $option,
+                'body'    => $message->getBody(),
+            ));
+        }
     }
 
     public function recv($reply = null)

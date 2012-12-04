@@ -13,6 +13,8 @@ use Iris\WorkerQueue;
  * detect disconnect using heartbeat
  * send work to workers based least recently used
  * recover from dead/disconnected workers by resending requests to other workers
+ *
+ * @todo Allow frontend for clients and backend for workers
  */
 class Broker
 {
@@ -22,19 +24,30 @@ class Broker
      */
     protected $logger;
 
-    protected $heartbeat_liveness = 5;
+    protected $heartbeat_liveness = 3;
     protected $heartbeat_interval = 2500;
     protected $heartbeat_expiry;
     protected $heartbeat_at;
 
+    /**
+     * @var \ZMQSocket
+     */
     protected $socket;
     protected $dsn;
 
-    protected $worker_queue;
-
+    /**
+     * Contains a list of services with all known workers.
+     *
+     * @var array
+     */
     protected $services = array();
+
+    /**
+     * key value list of workers by address being the key
+     *
+     * @var array
+     */
     protected $workers  = array();
-    protected $waiting  = array();
 
     /**
      */
@@ -43,7 +56,6 @@ class Broker
         $context      = new \ZMQContext();
         $this->socket = new \ZMQSocket($context, \ZMQ::SOCKET_ROUTER);
 
-        $this->worker_queue     = new WorkerQueue();
         $this->heartbeat_expiry = $this->heartbeat_interval * $this->heartbeat_liveness;
         $this->heartbeat_at     = microtime(true) + ($this->heartbeat_interval / 1000);
     }
@@ -111,8 +123,9 @@ class Broker
 
             $this->logger->debug('Stats', array(
                 'workers'  => count($this->workers),
-                'waiting'  => count($this->waiting),
-                'services' => count($this->services),
+                //'waiting'  => count($this->waiting),
+                'servicesCount' => count($this->services),
+                'service' => array_keys($this->services),
                 'memory'   => array(
                     'memory_limit' => ini_get('memory_limit'),
                     'usage/peak'   => call_user_func(function () {
@@ -132,15 +145,8 @@ class Broker
      */
     protected function purgeWorkers()
     {
-        foreach ($this->waiting as $worker) {
-            //$this->logger->debug('Checking to see if time to purge worker.',array(
-            //    'worker' => Message::encode($worker->identity),
-            //    'expiry' => $worker->expiry,
-            //    'time'   => microtime(true),
-            //    'totalWorkers' => count($this->workers),
-            //    'totalWaiting' => count($this->waiting),
-            //));
-            if (microtime(true) > $worker->expiry) {
+        foreach ($this->workers as $worker) {
+            if (empty($worker->expires_at) || microtime(true) > $worker->expires_at) {
                 $this->deleteWorker($worker);
             }
 
@@ -157,9 +163,11 @@ class Broker
     {
         if (!isset($this->services[$name])) {
             $service           = new \stdClass();
-            $service->name     = $name;
-            $service->requests = array();
-            $service->waiting  = array();
+            $service->name     = $name;   // Name of service
+            $service->workers  = array(); // List of workers tied to this service
+            $service->requests = array(); // Requests from clients
+            $service->waiting  = new WorkerQueue(); // Available Workers
+
             $this->services[$name] = $service;
             $this->logger->debug('New Service', array(
                 'name' => $name,
@@ -173,12 +181,13 @@ class Broker
      * @param stdClass $service
      * @param \Iris\Message $message
      */
-    protected function serviceDispatch($service, $message = null)
+    protected function serviceDispatch($service, Message $message = null)
     {
         $this->logger->debug('Service Dispatching', array(
-            'name'         => $service->name,
-            'workers'      => count($service->workers),
-            'totalWorkers' => count($this->workers),
+            'name'           => $service->name,
+            'workers'        => count($service->workers),
+            'waitingWorkers' => count($service->waiting),
+            'totalWorkers'   => count($this->workers),
         ));
 
         if ($message) {
@@ -188,36 +197,43 @@ class Broker
         $this->purgeWorkers();
 
         while (count($service->waiting) && count($service->requests)) {
-            $worker  = array_shift($service->waiting);
+            $worker  = $service->waiting->extract();
             $message = array_shift($service->requests);
             $this->workerSend($worker, Mdp::REQUEST, null, $message);
         }
     }
 
-    public function serviceInternal($frame, $message)
+    /**
+     * @param string $service_name
+     * @param Message $message
+     */
+    public function serviceInternal($service_name, Message $message)
     {
-        if ('mmi.service' === $frame) {
-            $name = $message->getLast();
-            $service = $this->services[$name];
+        if ('mmi.service' === $service_name) {
+            $name        = $message->getLast();
+            $service     = $this->services[$name];
             $return_code = $service && $service->workers ? 200 : 404;
         } else {
             $return_code = 501;
             $this->logger->alert('501', array(
-                'frame' => $frame,
+                'service_name' => $service_name,
             ));
         }
 
         $message->setLast($return_code);
 
         $client = $message->unwrap();
-        $this->logger->debug('Sending message to client.', array(
-            'client'  => $client,
-            'service' => $frame,
-        ));
-        $message->push($frame);
+
+        $message->push($service_name);
         $message->push(Mdp::CLIENT);
         $message->wrap($client, "");
         $message->setSocket($this->socket)->send();
+
+        $this->logger->debug('Sending message to client.', array(
+            'client'      => $client,
+            'service'     => $service_name,
+            'return_code' => $return_code
+        ));
     }
 
     /**
@@ -226,18 +242,21 @@ class Broker
      */
     protected function getWorker($address)
     {
-        if (!isset($this->workers[$address])) {
-            $worker           = new \stdClass();
-            $worker->identity = $address;
-            $worker->address  = $address;
+        $identity = Message::encode($address);
+        if (!isset($this->workers[$identity])) {
+            $worker               = new \stdClass();
+            $worker->identity     = $identity;
+            $worker->address      = $address;
+            $worker->service_name = null;
+            $worker->expires_at   = null;
 
-            $this->workers[$address] = $worker;
+            $this->workers[$identity] = $worker;
             $this->logger->debug('New Worker', array(
-                'address' => Message::encode($address),
+                'identity' => $worker->identity,
             ));
         }
 
-        return $this->workers[$address];
+        return $this->workers[$identity];
     }
 
     /**
@@ -251,18 +270,17 @@ class Broker
             'disconnect'   => $disconnect,
             'totalWorkers' => count($this->workers) - 1,
         ));
+
         if ($disconnect) {
             $this->workerSend($worker, Mdp::DISCONNECT);
         }
 
-        if (isset($worker->service)) {
-            $this->workerRemoveFromArray($worker, $worker->service->waiting);
-            $worker->service->workers--;
-        }
-
-        $this->workerRemoveFromArray($worker, $this->waiting);
         unset($this->workers[$worker->identity]);
-        unset($this->waiting[$worker->identity]);
+
+        $service = $this->getService($worker->service_name);
+        if (isset($service->workers[$worker->identity])) {
+            unset($this->services[$worker->service_name]->workers[$worker->identity]);
+        }
     }
 
     protected function workerRemoveFromArray($worker, &$array)
@@ -273,10 +291,12 @@ class Broker
         }
     }
 
-    public function workerProcess($sender, $message)
+    /**
+     */
+    protected function workerProcess($sender, $message)
     {
         $command      = $message->pop();
-        $worker_ready = isset($this->workers[$sender]);
+        $worker_ready = isset($this->workers[Message::encode($sender)]);
         $worker       = $this->getWorker($sender);
 
         switch($command) {
@@ -286,16 +306,17 @@ class Broker
             } elseif(strlen($sender) >= 4 && 'mmi.' == substr($sender, 0, 4)) {
                 $this->deleteWorker($worker, true);
             } else {
-                $service_frame   = $message->pop();
-                $worker->service = $this->getService($service_frame);
-                $worker->service->workers++;
+                $service_name                        = $message->pop();
+                $service                             = $this->getService($service_name);
+                $service->workers[$worker->identity] = $worker;
+                $worker->service_name                = $service_name;
                 $this->workerWaiting($worker);
             }
             break;
         case(Mdp::REPLY):
             if ($worker_ready) {
                 $client = $message->unwrap();
-                $message->push($worker->service->name);
+                $message->push($worker->service_name);
                 $message->push(Mdp::CLIENT);
                 $message->wrap($client, '');
                 $message->setSocket($this->socket)->send();
@@ -306,7 +327,7 @@ class Broker
             break;
         case(Mdp::HEARTBEAT):
             if ($worker_ready) {
-                $worker->expiry = microtime(true) + ($this->heartbeat_expiry / 1000);
+                $worker->expires_at = microtime(true) + ($this->heartbeat_expiry / 1000);
             } else {
                 $this->deleteWorker($worker, true);
             }
@@ -349,14 +370,16 @@ class Broker
 
     public function workerWaiting($worker)
     {
-        $this->waiting[] = $worker;
-        $worker->service->waiting[] = $worker;
-        $worker->expiry = microtime(true) + ($this->heartbeat_expiry / 1000);
+        $service                      = $this->getService($worker->service_name);
+        //$this->waiting[]            = $worker;
+        //$worker->service->waiting[] = $worker;
+        $worker->expires_at               = microtime(true) + ($this->heartbeat_expiry / 1000);
+        $service->waiting->insert($worker);
         $this->logger->debug('workerWaiting', array(
             'worker' => Message::encode($worker->identity),
-            'expiry' => $worker->expiry,
+            'expiry' => $worker->expires_at,
         ));
-        $this->serviceDispatch($worker->service);
+        $this->serviceDispatch($service);
     }
 
     public function clientProcess($sender, $message)

@@ -23,7 +23,7 @@ for ($i = 0; $i < 10; $i++) {
 /**
  * Send a lot of messages and get the responses later
  */
-$totalRequests = 1000;
+$totalRequests = 10;
 for ($i = 0; $i < $totalRequests; $i++) {
     $message = new \Iris\Message();
     $message->setBody('Hello World');
