@@ -5,6 +5,7 @@ namespace Iris;
 use Iris\Mdp;
 use Iris\Message;
 use Iris\WorkerQueue;
+use Monolog\Logger;
 
 /**
  * @see http://rfc.zeromq.org/spec:7
@@ -71,6 +72,23 @@ class Broker
     }
 
     /**
+     * This is a wrapper around monolog, logging is useful, but shouldn't
+     * be required.
+     *
+     * @see Monolog\Logger
+     *
+     * @param integer $level
+     * @param string $message
+     * @param array $context
+     */
+    public function addRecord($level, $message, array $context = array())
+    {
+        if (null !== $this->logger) {
+            $this->logger->addRecord($level, $message, $context);
+        }
+    }
+
+    /**
      * @param string $dsn
      * @return Broker
      */
@@ -108,7 +126,7 @@ class Broker
                     $this->workerProcess($sender, $message);
                     break;
                 default:
-                    $this->logger->alert('Unknown Header', array('header' => $header));
+                    $this->addRecord(Logger::ALERT, 'Unknown Header', array('header' => $header));
                     break;
                 }
             }
@@ -121,7 +139,7 @@ class Broker
                 $this->heartbeat_at = microtime(true) + ($this->heartbeat_interval / 1000);
             }
 
-            $this->logger->debug('Stats', array(
+            $this->addRecord(Logger::DEBUG, 'Stats', array(
                 'workers'  => count($this->workers),
                 //'waiting'  => count($this->waiting),
                 'servicesCount' => count($this->services),
@@ -169,7 +187,7 @@ class Broker
             $service->waiting  = new WorkerQueue(); // Available Workers
 
             $this->services[$name] = $service;
-            $this->logger->debug('New Service', array(
+            $this->addRecord(Logger::DEBUG, 'New Service', array(
                 'name' => $name,
             ));
         }
@@ -183,7 +201,7 @@ class Broker
      */
     protected function serviceDispatch($service, Message $message = null)
     {
-        $this->logger->debug('Service Dispatching', array(
+        $this->addRecord(Logger::DEBUG, 'Service Dispatching', array(
             'name'           => $service->name,
             'workers'        => count($service->workers),
             'waitingWorkers' => count($service->waiting),
@@ -215,7 +233,7 @@ class Broker
             $return_code = $service && $service->workers ? 200 : 404;
         } else {
             $return_code = 501;
-            $this->logger->alert('501', array(
+            $this->addRecord(Logger::ALERT, '501', array(
                 'service_name' => $service_name,
             ));
         }
@@ -229,7 +247,7 @@ class Broker
         $message->wrap($client, "");
         $message->setSocket($this->socket)->send();
 
-        $this->logger->debug('Sending message to client.', array(
+        $this->addRecord(Logger::DEBUG, 'Sending message to client.', array(
             'client'      => $client,
             'service'     => $service_name,
             'return_code' => $return_code
@@ -251,7 +269,7 @@ class Broker
             $worker->expires_at   = null;
 
             $this->workers[$identity] = $worker;
-            $this->logger->debug('New Worker', array(
+            $this->addRecord(Logger::DEBUG, 'New Worker', array(
                 'identity' => $worker->identity,
             ));
         }
@@ -265,7 +283,7 @@ class Broker
      */
     protected function deleteWorker($worker, $disconnect = false)
     {
-        $this->logger->debug('Deleting Worker', array(
+        $this->addRecord(Logger::DEBUG, 'Deleting Worker', array(
             'worker'       => Message::encode($worker->address),
             'disconnect'   => $disconnect,
             'totalWorkers' => count($this->workers) - 1,
@@ -336,7 +354,7 @@ class Broker
             $this->deleteWorker($worker, true);
             break;
         default:
-            $this->logger->alert('Unknown Command', array(
+            $this->addRecord(Logger::ALERT, 'Unknown Command', array(
                 'command' => $command,
             ));
             break;
@@ -354,7 +372,7 @@ class Broker
         }
 
         if ($command != Mdp::HEARTBEAT) {
-            $this->logger->debug('Sending worker message', array(
+            $this->addRecord(Logger::DEBUG, 'Sending worker message', array(
                 'worker'  => Message::encode($worker->address),
                 'option'  => $option,
                 'command' => $command,
@@ -375,7 +393,7 @@ class Broker
         //$worker->service->waiting[] = $worker;
         $worker->expires_at               = microtime(true) + ($this->heartbeat_expiry / 1000);
         $service->waiting->insert($worker);
-        $this->logger->debug('workerWaiting', array(
+        $this->addRecord(Logger::DEBUG, 'workerWaiting', array(
             'worker' => Message::encode($worker->identity),
             'expiry' => $worker->expires_at,
         ));
