@@ -1,7 +1,27 @@
 {
     "name": "iris/iris",
-    "stability": "dev",
+    "description": "zeromq library that uses the MDP protocol",
+    "keywords": ['0mq', 'zeromq', 'mdp', 'majordomo'],
+    "homepage": "://github.com/JoshuaEstes/iris",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Joshua Estes",
+            "role": "Developer"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/JoshuaEstes/iris/issues",
+        "source": "https://github.com/JoshuaEstes/iris"
+    },
+    "minimum-stability": "dev",
+    "extra": {
+        "branch-alias": {
+            "dev-master": "1.0.x-dev"
+        }
+    },
     "require": {
+        "ext-zmq": "*",
         "monolog/monolog": "*"
     },
     "require-dev": {
