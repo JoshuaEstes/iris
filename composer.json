@@ -1,8 +1,8 @@
 {
     "name": "iris/iris",
     "description": "zeromq library that uses the MDP protocol",
-    "keywords": ['0mq', 'zeromq', 'mdp', 'majordomo'],
-    "homepage": "://github.com/JoshuaEstes/iris",
+    "keywords": ["0mq", "zeromq", "mdp", "majordomo"],
+    "homepage": "http://github.com/JoshuaEstes/iris",
     "license": "MIT",
     "authors": [
         {
