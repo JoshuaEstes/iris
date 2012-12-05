@@ -4,7 +4,7 @@ namespace Iris;
 
 use Iris\Mdp;
 use Iris\Message;
-use Iris\WorkerQueue;
+use Iris\Queue;
 use Monolog\Logger;
 
 /**
@@ -34,6 +34,10 @@ class Broker
      * @var \ZMQSocket
      */
     protected $socket;
+
+    /**
+     * @var string
+     */
     protected $dsn;
 
     /**
@@ -115,7 +119,7 @@ class Broker
                 $message->recv();
 
                 $sender = $message->pop();
-                $empty  = $message->pop();
+                $message->pop(); // empty, don't need this
                 $header = $message->pop();
 
                 switch($header) {
@@ -181,10 +185,10 @@ class Broker
     {
         if (!isset($this->services[$name])) {
             $service           = new \stdClass();
-            $service->name     = $name;   // Name of service
-            $service->workers  = array(); // List of workers tied to this service
-            $service->requests = array(); // Requests from clients
-            $service->waiting  = new WorkerQueue(); // Available Workers
+            $service->name     = $name;       // Name of service
+            $service->workers  = array();     // List of workers tied to this service
+            $service->requests = array();     // Requests from clients
+            $service->waiting  = new Queue(); // Available Workers
 
             $this->services[$name] = $service;
             $this->addRecord(Logger::DEBUG, 'New Service', array(
@@ -215,7 +219,7 @@ class Broker
         $this->purgeWorkers();
 
         while (count($service->waiting) && count($service->requests)) {
-            $worker  = $service->waiting->extract();
+            $worker  = $service->waiting->dequeue();
             $message = array_shift($service->requests);
             $this->workerSend($worker, Mdp::REQUEST, null, $message);
         }
@@ -296,8 +300,18 @@ class Broker
         unset($this->workers[$worker->identity]);
 
         $service = $this->getService($worker->service_name);
+
         if (isset($service->workers[$worker->identity])) {
-            unset($this->services[$worker->service_name]->workers[$worker->identity]);
+            // Remove worker from service
+            unset($service->workers[$worker->identity]);
+
+            // Remove form the waiting workers queue
+            foreach ($service->waiting as $i => $waitingWorker) {
+                if ($waitingWorker->identity === $worker->identity) {
+                    $service->waiting->offsetUnset($i);
+                    break;
+                }
+            }
         }
     }
 
@@ -392,7 +406,7 @@ class Broker
         //$this->waiting[]            = $worker;
         //$worker->service->waiting[] = $worker;
         $worker->expires_at               = microtime(true) + ($this->heartbeat_expiry / 1000);
-        $service->waiting->insert($worker);
+        $service->waiting->enqueue($worker);
         $this->addRecord(Logger::DEBUG, 'workerWaiting', array(
             'worker' => Message::encode($worker->identity),
             'expiry' => $worker->expires_at,
