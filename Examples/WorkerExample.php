@@ -3,7 +3,9 @@
 require_once __DIR__ . '/../vendor/autoload.php';
 
 $logger = new \Monolog\Logger('worker');
-$logger->pushHandler(new \Monolog\Handler\StreamHandler('php://stdout'));
+$streamHandler = new \Monolog\Handler\StreamHandler('php://stdout');
+$streamHandler->setFormatter(new \Monolog\Formatter\LineFormatter(null, 'Y-m-d H:i:s:u'));
+$logger->pushHandler($streamHandler);
 
 $worker = new \Iris\Worker();
 $worker->setLogger($logger);
